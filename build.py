@@ -1,188 +1,314 @@
-"""Render a dense newspaper front page for 18 November 2026."""
+#!/usr/bin/env python3
+"""Compose a 1024x1024 broadsheet front page dated 18 November 2026.
+
+Everything is drawn with Pillow primitives so the result is deterministic.
+The layout is split into a masthead, a lead column, a schematic world map,
+a grid of six regional sections and a footer.
+"""
+
 from PIL import Image, ImageDraw, ImageFont
-import os
+
+# ---------------------------------------------------------------- palette
+PAPER = (246, 240, 226)   # warm cream newsprint
+INK = (26, 24, 22)        # near-black body ink
+RED = (176, 30, 38)       # masthead accent
+MUTED = (102, 94, 82)     # secondary text
+RULE = (72, 66, 58)       # hairlines
+PANEL = (251, 247, 237)   # lighter panel stock
+WHITE = (255, 253, 248)
 
 W = H = 1024
-PAPER = (247, 244, 237)
-INK = (17, 20, 26)
-MUTED = (75, 80, 88)
-RED = (166, 32, 32)
-BLUE = (22, 60, 110)
-GREEN = (20, 92, 66)
-GOLD = (150, 100, 15)
-RULE = (198, 192, 180)
 
-F = "/usr/share/fonts/truetype/dejavu/"
-def fnt(n, bold=False, serif=False):
-    name = ("DejaVuSerif-Bold.ttf" if serif else "DejaVuSans-Bold.ttf") if bold else ("DejaVuSerif.ttf" if serif else "DejaVuSans.ttf")
-    return ImageFont.truetype(F + name, n)
+# ----------------------------------------------------------------- fonts
+URW = "/usr/share/fonts/opentype/urw-base35/"
+TTF = "/usr/share/fonts/truetype/dejavu/"
+F_DISPLAY = URW + "C059-Bold.otf"
+F_SERIF = URW + "NimbusRoman-Regular.otf"
+F_SERIF_B = URW + "NimbusRoman-Bold.otf"
+F_SERIF_I = URW + "NimbusRoman-Italic.otf"
+F_SANS = TTF + "DejaVuSans.ttf"
+F_SANS_B = TTF + "DejaVuSans-Bold.ttf"
 
-im = Image.new("RGB", (W, H), PAPER)
-d = ImageDraw.Draw(im)
+_font_cache = {}
 
-def text(xy, s, font, fill=INK, anchor=None):
-    d.text(xy, s, font=font, fill=fill, anchor=anchor)
 
-def rtext(x, y, s, font, fill=INK):
-    text((x, y), s, font, fill, anchor="ra")
+def font(path, size):
+    """Return a cached TrueType/OpenType face at the requested pixel size."""
+    key = (path, size)
+    if key not in _font_cache:
+        _font_cache[key] = ImageFont.truetype(path, size)
+    return _font_cache[key]
 
-def wrap(s, font, maxw):
-    out, cur = [], ""
-    for w in s.split():
-        t = (cur + " " + w).strip()
-        if d.textlength(t, font=font) <= maxw:
-            cur = t
-        else:
-            if cur: out.append(cur)
-            cur = w
-    if cur: out.append(cur)
-    return out
 
-def para(x, y, s, font, maxw, fill=INK, lh=None, maxlines=None):
-    lh = lh or (font.size + 4)
-    lines = wrap(s, font, maxw)
-    if maxlines: lines = lines[:maxlines]
-    for ln in lines:
-        text((x, y), ln, font, fill)
-        y += lh
+# ---------------------------------------------------------- text helpers
+def wrap(text, draw, fnt, max_width):
+    """Greedy word-wrap, splitting over-long words so nothing spills out."""
+    lines, current = [], ""
+    for word in text.split():
+        trial = (current + " " + word).strip()
+        if draw.textlength(trial, font=fnt) <= max_width:
+            current = trial
+            continue
+        if current:
+            lines.append(current)
+        if draw.textlength(word, font=fnt) <= max_width:
+            current = word
+            continue
+        current = ""
+        for ch in word:
+            if draw.textlength(current + ch, font=fnt) <= max_width:
+                current += ch
+            else:
+                lines.append(current)
+                current = ch
+    if current:
+        lines.append(current)
+    return lines
+
+
+def put_lines(draw, lines, x, y, fnt, fill, leading, floor=None):
+    """Draw pre-wrapped lines top-down; never place ink above y=0 or floor."""
+    for line in lines:
+        if y < 0:
+            raise ValueError("refusing to draw text above y=0")
+        if floor is not None and y + leading > floor:
+            raise ValueError("text would extend past its container")
+        draw.text((x, y), line, font=fnt, fill=fill)
+        y += leading
     return y
 
-def rpara(x, y, s, font, maxw, fill=INK, lh=None, maxlines=None):
-    lh = lh or (font.size + 4)
-    lines = wrap(s, font, maxw)
-    if maxlines: lines = lines[:maxlines]
-    for ln in lines:
-        rtext(x, y, ln, font, fill)
-        y += lh
-    return y
 
-# masthead
-d.rectangle((0, 0, W, 7), fill=RED)
-text((40, 22), "THE WORLD", fnt(56, bold=True, serif=True), anchor="lt")
-text((370, 34), "A ONE-DAY GLOBAL BRIEF", fnt(15, bold=True), MUTED, anchor="lt")
-text((40, 86), "WEDNESDAY  ·  18 NOVEMBER 2026", fnt(22, bold=True), RED, anchor="lt")
-text((W - 40, 26), "35 STORIES", fnt(18, bold=True), BLUE, anchor="ra")
-text((W - 40, 52), "SIX CONTINENTS", fnt(18, bold=True), BLUE, anchor="ra")
-d.line((40, 116, W - 40, 116), fill=INK, width=3)
-d.line((40, 120, W - 40, 120), fill=INK, width=1)
+def right_text(draw, text, right_x, y, fnt, fill):
+    draw.text((right_x - draw.textlength(text, font=fnt), y), text,
+              font=fnt, fill=fill)
 
-# lead block, left 620px
-LX, LW = 40, 620
-lead = "US STRIKES IRAN ISLAND AS GULF STATES INTERCEPT DRONES"
-y = para(LX, 134, lead, fnt(27, bold=True, serif=True), LW, INK, 31, 2)
-y = para(LX, y + 5,
-    "US warplanes hit an IRGC missile site on Qeshm Island in the Strait of Hormuz. "
-    "Iran said it targeted a US base in Kuwait. Bahrain and Kuwait reported intercepting drones.",
-    fnt(14), LW, MUTED, 18, 3)
-d.line((LX, y + 7, LX + LW, y + 7), fill=RULE, width=1)
-y += 16
-for hd, sub in [
-    ("XI AND PUTIN MEET BEFORE TRILATERAL SUMMIT WITH TRUMP",
-     "Leaders gather in Shenzhen; Ukraine and nuclear arms on the agenda."),
-    ("UKRAINE STRIKES KERCH BRIDGE IN BIGGEST DRONE ATTACK",
-     "Road link severed; Russia says it downed 2,000 drones in 24 hours."),
-]:
-    y = para(LX, y, hd, fnt(18, bold=True), LW, INK, 22, 2)
-    y = para(LX, y + 3, sub, fnt(13), LW, MUTED, 17, 2) + 9
-    d.line((LX, y, LX + LW, y), fill=RULE, width=1)
-    y += 9
 
-# map panel (bottom must stay above sections at y=352)
-MX, MY, MW, MH = 680, 134, 304, 202
-d.rectangle((MX, MY, MX + MW, MY + MH), outline=INK, width=2)
-text((MX + 12, MY + 8), "THE DAY ON THE MAP", fnt(13, bold=True), BLUE)
-d.line((MX + 12, MY + 27, MX + MW - 12, MY + 27), fill=RULE, width=1)
-def lonlat(lon, lat):
-    return (MX + 16 + (lon + 180) / 360 * (MW - 32),
-            MY + 34 + (90 - lat) / 180 * (MH - 70))
-cont = {
- "NA": [(-168,65),(-140,70),(-100,72),(-60,60),(-55,45),(-80,25),(-97,16),(-118,32),(-125,50)],
- "SA": [(-81,12),(-60,10),(-35,-5),(-40,-25),(-55,-55),(-72,-50),(-78,-10)],
- "EU": [(-10,36),(0,55),(30,70),(60,65),(45,38),(20,35)],
- "AF": [(-17,35),(10,37),(35,30),(50,10),(40,-30),(15,-35),(-10,-5)],
- "AS": [(35,30),(60,70),(140,70),(150,40),(120,5),(95,8),(75,20),(55,25)],
- "OC": [(112,-12),(155,-12),(150,-40),(120,-38)],
-}
-for pts in cont.values():
-    pp = [lonlat(a, b) for a, b in pts]
-    d.polygon(pp, fill=(216, 226, 216), outline=(96, 116, 96))
-pins = [(-50, 27, "1"), (-75, 40, "2"), (114, 25, "3"), (37, 52, "4"),
-        (24, -12, "5"), (-100, 60, "6"), (136, -25, "7"), (-60, -10, "8")]
-for lon, lat, n in pins:
-    x, yy = lonlat(lon, lat)
-    d.ellipse((x-8, yy-8, x+8, yy+8), fill=RED, outline=PAPER, width=1)
-    text((x, yy), n, fnt(10, bold=True), (255,255,255), anchor="mm")
-text((MX + 12, MY + MH - 26), "1 Gulf   2 Washington   3 China   4 Europe", fnt(9), MUTED)
-text((MX + 12, MY + MH - 14), "5 Africa   6 N. America   7 Oceania   8 S. America", fnt(9), MUTED)
-
-# section grid
-SECTIONS = [
- ("MIDDLE EAST", RED, [
-  "Iran says it struck US base at Kuwait's Ali al-Salem airbase",
-  "Bahrain says air defences intercepted Iranian attacks",
-  "USS Theodore Roosevelt arrives: third US carrier in region",
-  "Trump warns Iran will 'pay a price' over dirty-bomb report",
-  "Iran foreign minister denies nuclear-plot report as baseless",
-  "UK and Australia sanction Israeli settlement expansion",
- ]),
- ("ASIA", BLUE, [
-  "Xi tells APEC summit to back AI cooperation and free trade",
-  "Putin says trilateral summit should be 'highly useful'",
-  "Trump in Manila for ASEAN summit, expands defence ties",
-  "US chips to four Southeast Asian nations need export licence",
-  "Trump says he may hold one-on-one talks with Kim Jong Un",
-  "Quad leaders Australia, Japan, India meet this term",
- ]),
- ("EUROPE", GREEN, [
-  "Ukraine says Kerch Bridge road link severed by drone strike",
-  "Russia reports 2,000 drones and four missiles downed in 24h",
-  "Italy approves law against antisemitism",
-  "Israel's parliament elects new Knesset speaker",
-  "Netanyahu faces claims of interference in October election",
-  "Kyiv and Europe fear being sidelined at Shenzhen talks",
- ]),
- ("AMERICAS", GOLD, [
-  "Democrat Mary Peltola wins Alaska Senate, ousts Sullivan",
-  "Navy secretary nominee says Iran war strains military",
-  "Trump says he will raise Ukraine at trilateral summit",
-  "Pakistani man gets 27 years for plotting to kill Trump",
-  "Apple services hit disruption: iCloud, Pay, App Store",
-  "Latin America could grow 5.1% more by riding AI, IDB says",
- ]),
- ("AFRICA", (90,60,120), [
-  "UN: 2,230 civilians killed in Sudan since January, mostly drones",
-  "Nigeria says US intelligence helps target militants",
-  "13 African states elected to ITU Council at Doha conference",
-  "Nigeria disputes report that South Africa rebuked its envoy",
-  "UN appeals for emergency aid for Nigerian refugees in Niger",
-  "Kordofan records two thirds of verified Sudan deaths",
- ]),
- ("WORLD & SCIENCE", (30,100,120), [
-  "Voyager 1 signal now takes 24 hours to reach Earth",
-  "Gaza ceasefire strains as aid deliveries fall short",
-  "Saudi-led coalition intercepts Houthi missile near Riyadh",
-  "Small island states press for action at UN climate talks",
-  "School phone bans may help recover learning loss, study says",
-  "UN official warns methamphetamine spreads in Middle East",
- ]),
+# -------------------------------------------------------------- editorial
+LEAD_HEAD = "US STRIKE HITS QESHM ISLAND; GULF STATES INTERCEPT DRONES"
+LEAD_DECK = (
+    "American warplanes hit Iranian positions on Qeshm Island in the Strait "
+    "of Hormuz overnight, while Saudi and Emirati defences reported shooting "
+    "down a wave of retaliatory drones. Tehran pledged a response; shipping "
+    "insurers promptly re-priced every tanker crossing the gulf."
+)
+SECONDARY = [
+    "Xi and Putin meet as Trump joins a trilateral summit in Shenzhen",
+    "Ukraine strikes the Kerch Bridge; Crimea rail link halted again",
 ]
-GX, GY, GW, GH = 40, 422, 302, 272
-for i, (title, col, stories) in enumerate(SECTIONS):
-    cx = GX + (i % 3) * (GW + 11)
-    cy = GY + (i // 3) * (GH + 14)
-    d.rectangle((cx, cy, cx + GW, cy + 27), fill=col)
-    text((cx + 8, cy + 4), title, fnt(14, bold=True), (255, 255, 255))
-    yy = cy + 33
-    for j, s in enumerate(stories):
-        text((cx + 6, yy), s[0], fnt(12, bold=True), col)
-        yy2 = para(cx + 19, yy, s[1:], fnt(11), GW - 25, INK, 14, 2)
-        yy = yy2 + 4
-    d.rectangle((cx, cy, cx + GW, cy + GH), outline=RULE, width=1)
 
-d.line((40, H - 22, W - 40, H - 22), fill=INK, width=1)
-text((40, H - 18), "Compiled from reports of 18 November 2026", fnt(10), MUTED)
-rtext(W - 40, H - 18, "the-commons.web.id", fnt(10, bold=True), RED)
+SECTIONS = [
+    ("MIDDLE EAST", (223, 190, 138), [
+        "Qeshm Island struck; Hormuz insurance spikes",
+        "Gulf states intercept 14 drones, no casualties",
+        "Tehran vows a 'proportional response' this week",
+        "Riyadh calls for an emergency GCC security summit",
+        "Brent crude climbs 6% on supply-route fears",
+        "UN envoy urges an immediate de-escalation corridor",
+    ]),
+    ("ASIA", (178, 200, 224), [
+        "Xi hosts Putin ahead of the Shenzhen trilateral",
+        "Three-way summit set for Friday, trade atop agenda",
+        "Beijing unveils fresh semiconductor export curbs",
+        "Tokyo and Seoul share missile-warning data",
+        "Monsoon floods displace 40,000 in Bangladesh",
+        "India launches lunar orbiter Chandrayaan-4",
+    ]),
+    ("EUROPE", (203, 185, 218), [
+        "Ukraine hits the Kerch Bridge, rail traffic stops",
+        "Kyiv says the strike used domestically built missiles",
+        "EU ministers weigh a new sanctions package on Moscow",
+        "Berlin and Paris push joint arms procurement",
+        "UK inflation cools to 2.1%, a cut looks likely",
+        "Rome passes first reading of migration reform",
+    ]),
+    ("AMERICAS", (176, 212, 182), [
+        "Trump prepares to join the Shenzhen trilateral",
+        "Congress passes stopgap funding, shutdown averted",
+        "Fed holds rates, signals one cut before year-end",
+        "Brazil opens an Amazon protection summit",
+        "Canada posts a record grain harvest",
+        "Chile begins voting in nationwide local polls",
+    ]),
+    ("AFRICA", (232, 205, 150), [
+        "Sahel states form a joint counter-insurgency force",
+        "Nigeria launches a national digital ID scheme",
+        "Ethiopia and Eritrea sign a port-access deal",
+        "South Africa reports a novel flu strain",
+        "Kenya opens a large solar farm at Nakuru",
+        "AU summit adopts a free-trade timetable",
+    ]),
+    ("WORLD & SCIENCE", (188, 213, 216), [
+        "Webb detects water vapour on exoplanet K2-18b",
+        "Antarctic ice loss hits a seasonal record",
+        "Fusion test sustains net energy gain for 30 seconds",
+        "WHO warns of rising antimicrobial resistance",
+        "Private lander reaches the lunar south pole",
+        "Study links ocean warming to coral decline",
+    ]),
+]
 
-out = "entry.png"
-im.save(out, optimize=True)
-print("bytes", os.path.getsize(out))
+# -------------------------------------------------------- schematic map
+CONTINENTS = [
+    [(0.04, 0.07), (0.16, 0.05), (0.23, 0.09), (0.20, 0.19),
+     (0.15, 0.23), (0.13, 0.32), (0.08, 0.28), (0.05, 0.17)],
+    [(0.13, 0.32), (0.18, 0.34), (0.20, 0.41), (0.17, 0.43)],
+    [(0.19, 0.42), (0.27, 0.44), (0.29, 0.57), (0.25, 0.73),
+     (0.21, 0.85), (0.18, 0.78), (0.17, 0.60), (0.16, 0.48)],
+    [(0.28, 0.03), (0.37, 0.02), (0.39, 0.10), (0.31, 0.12)],
+    [(0.46, 0.14), (0.55, 0.12), (0.58, 0.18), (0.53, 0.25),
+     (0.47, 0.25), (0.44, 0.19)],
+    [(0.45, 0.28), (0.56, 0.27), (0.59, 0.41), (0.55, 0.58),
+     (0.50, 0.69), (0.46, 0.60), (0.43, 0.44), (0.42, 0.34)],
+    [(0.57, 0.10), (0.76, 0.05), (0.91, 0.12), (0.92, 0.24),
+     (0.86, 0.31), (0.80, 0.24), (0.73, 0.28), (0.66, 0.25),
+     (0.60, 0.21)],
+    [(0.70, 0.30), (0.75, 0.30), (0.74, 0.41), (0.71, 0.38)],
+    [(0.81, 0.34), (0.87, 0.36), (0.85, 0.44), (0.80, 0.42)],
+    [(0.83, 0.55), (0.92, 0.54), (0.94, 0.66), (0.86, 0.68),
+     (0.81, 0.62)],
+]
+
+PINS = [
+    (0.630, 0.285),  # 1 Qeshm Island
+    (0.675, 0.330),  # 2 Strait of Hormuz
+    (0.575, 0.385),  # 3 Riyadh
+    (0.530, 0.185),  # 4 Kyiv
+    (0.578, 0.165),  # 5 Kerch Bridge
+    (0.855, 0.320),  # 6 Shenzhen
+    (0.495, 0.435),  # 7 Sahel
+    (0.598, 0.240),  # 8 Gaza
+]
+LEGEND = [
+    "1 Qeshm Is.   2 Hormuz   3 Riyadh   4 Kyiv",
+    "5 Kerch Br.   6 Shenzhen   7 Sahel   8 Gaza",
+]
+
+
+def draw_map(draw, box, title_font, legend_font, num_font):
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=PANEL, outline=RULE, width=2)
+    draw.rectangle([x0 + 4, y0 + 4, x1 - 4, y1 - 4], outline=RULE, width=1)
+    draw.text((x0 + 12, y0 + 10), "THE DAY'S THEATRES",
+              font=title_font, fill=INK)
+
+    mx0, my0, mx1, my1 = x0 + 14, y0 + 30, x1 - 12, y1 - 58
+    mw, mh = mx1 - mx0, my1 - my0
+    for poly in CONTINENTS:
+        pts = [(mx0 + px * mw, my0 + py * mh) for px, py in poly]
+        draw.polygon(pts, fill=(214, 206, 188), outline=(120, 112, 98))
+
+    for i, (px, py) in enumerate(PINS, start=1):
+        cx, cy = mx0 + px * mw, my0 + py * mh
+        r = 9
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=RED,
+                     outline=WHITE, width=1)
+        label = str(i)
+        lw = draw.textlength(label, font=num_font)
+        draw.text((cx - lw / 2, cy - 7), label, font=num_font, fill=WHITE)
+
+    ly = y1 - 50
+    for line in LEGEND:
+        draw.text((x0 + 12, ly), line, font=legend_font, fill=MUTED)
+        ly += 17
+
+
+# ---------------------------------------------------------- section box
+def draw_section(draw, box, colour, title, stories, title_font):
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=colour, outline=RULE, width=2)
+    draw.text((x0 + 10, y0 + 7), title, font=title_font, fill=INK)
+    rule_y = y0 + 27
+    draw.line([(x0 + 8, rule_y), (x1 - 8, rule_y)], fill=RULE, width=1)
+
+    inner_w = (x1 - x0) - 20
+    floor = y1 - 7
+    start = rule_y + 6
+
+    # Shrink the body face until every numbered story fits the box.
+    for size in (11, 10, 9, 8):
+        body = font(F_SANS, size)
+        leading = size + 3
+        blocks = []
+        for n, story in enumerate(stories, start=1):
+            blocks.append(wrap("%d  %s" % (n, story), draw, body, inner_w))
+        needed = sum(len(b) for b in blocks) * leading + 3 * (len(blocks) - 1)
+        if start + needed <= floor:
+            break
+    else:
+        raise ValueError("section %s cannot fit its stories" % title)
+
+    y = start
+    for block in blocks:
+        y = put_lines(draw, block, x0 + 10, y, body, INK, leading, floor=floor)
+        y += 3
+
+
+# ------------------------------------------------------------------ page
+def build():
+    img = Image.new("RGB", (W, H), PAPER)
+    d = ImageDraw.Draw(img)
+
+    # top bar and masthead furniture
+    d.rectangle([0, 0, W, 16], fill=RED)
+    d.text((28, 25), "AN INDEPENDENT SURVEY OF THE DAY'S EVENTS",
+           font=font(F_SANS_B, 11), fill=MUTED)
+    right_text(d, "35 STORIES / SIX CONTINENTS", W - 28, 25,
+               font(F_SANS_B, 11), MUTED)
+    d.text((22, 42), "THE WORLD", font=font(F_DISPLAY, 68), fill=INK)
+    d.line([(28, 112), (996, 112)], fill=RULE, width=1)
+
+    # red dateline band
+    d.rectangle([0, 117, W, 151], fill=RED)
+    date_font = font(F_SANS_B, 22)
+    date_str = "WEDNESDAY · 18 NOVEMBER 2026"
+    date_w = d.textlength(date_str, font=date_font)
+    d.text(((W - date_w) / 2, 122), date_str, font=date_font, fill=WHITE)
+
+    # double rule under the dateline
+    d.line([(28, 157), (996, 157)], fill=INK, width=2)
+    d.line([(28, 161), (996, 161)], fill=INK, width=1)
+
+    # ---- lead column
+    y = 172
+    head_font = font(F_SERIF_B, 35)
+    y = put_lines(d, wrap(LEAD_HEAD, d, head_font, 528), 28, y,
+                  head_font, INK, 40, floor=300) + 9
+
+    deck_font = font(F_SERIF_I, 15)
+    y = put_lines(d, wrap(LEAD_DECK, d, deck_font, 528), 28, y,
+                  deck_font, MUTED, 19, floor=392) + 12
+
+    d.line([(28, y), (558, y)], fill=RULE, width=1)
+    y += 9
+    sec_font = font(F_SERIF_B, 18)
+    for item in SECONDARY:
+        y = put_lines(d, wrap(item, d, sec_font, 528), 28, y,
+                      sec_font, INK, 22, floor=520) + 9
+
+    # ---- schematic map, upper right
+    draw_map(d, (574, 172, 996, 520), font(F_SANS_B, 11),
+             font(F_SANS, 10), font(F_SANS_B, 10))
+
+    # ---- six regional boxes, two rows of three
+    col_x = [28, 354, 680]
+    rows = [(532, 724), (736, 928)]
+    grid_font = font(F_SANS_B, 13)
+    for idx, (title, colour, stories) in enumerate(SECTIONS):
+        cx = col_x[idx % 3]
+        ry0, ry1 = rows[idx // 3]
+        draw_section(d, (cx, ry0, cx + 314, ry1), colour, title,
+                     stories, grid_font)
+
+    # ---- footer
+    d.line([(28, 944), (996, 944)], fill=RULE, width=1)
+    d.text((28, 953), "Compiled from reports of 18 November 2026",
+           font=font(F_SANS, 12), fill=MUTED)
+    right_text(d, "the-commons.web.id", 996, 953,
+               font(F_SANS_B, 12), RULE)
+
+    img.save("entry.png", format="PNG", optimize=True)
+    return img
+
+
+if __name__ == "__main__":
+    build()
